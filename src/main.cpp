@@ -281,13 +281,28 @@ void saveWiFiConfig(String newSSID, String newPass) {
 // Fungsi untuk menghapus konfigurasi WiFi dari EEPROM
 void clearWiFiConfig() {
     EEPROM.begin(EEPROM_SIZE);
+    
+    // Hapus semua data dengan menulis 0
     for (int i = 0; i < EEPROM_SIZE; i++) {
         EEPROM.write(i, 0);
     }
-    EEPROM.commit();
+    
+    // Pastikan commit berhasil
+    bool success = EEPROM.commit();
     EEPROM.end();
-    Serial.println("WiFi configuration cleared!");
+    
+    if (success) {
+        Serial.println("WiFi configuration cleared successfully!");
+    } else {
+        Serial.println("Failed to clear WiFi configuration!");
+    }
+    
+    // Reset variabel global
+    ssid = "";
+    password = "";
+    triggerMACs = "";
 }
+
 
 // Fungsi untuk reset counter EEPROM
 void resetEepromCounter() {
@@ -489,6 +504,20 @@ void processWiFiSettings(String request) {
     }
 }
 
+void safeRestart() {
+    Serial.println("Preparing for safe restart...");
+    
+    // Tutup semua koneksi WiFi
+    WiFi.disconnect(true);
+    
+    // Tunggu sebentar
+    delay(1000);
+    
+    // Restart ESP
+    ESP.restart();
+}
+
+
 // Fungsi untuk menangani relay
 void handleRelayRequest(WiFiClient client, String request) {
     if (request.indexOf("/RELAY=ON") != -1) {
@@ -499,6 +528,37 @@ void handleRelayRequest(WiFiClient client, String request) {
         Serial.println("RELAY=OFF");
         digitalWrite(RELAY, HIGH);
     }
+    if (request.indexOf("/manualreset") != -1) {
+        Serial.println("Manual Reset Requested");
+        client.println("HTTP/1.1 200 OK");
+        client.println("Content-Type: text/html");
+        client.println("");
+        client.println("<!DOCTYPE HTML><html>");
+        client.println("<head><meta http-equiv='refresh' content='5;url=/' /></head>");
+        client.println("<body style='font-family: Arial; text-align: center; margin: 20px;'>");
+        client.println("<h2>Manual Reset in Progress</h2>");
+        client.println("<p>Device is resetting to factory settings...</p>");
+        client.println("<p>You will be redirected to the home page in 5 seconds.</p>");
+        client.println("<div style='background-color: #f2f2f2; padding: 20px; border-radius: 8px; margin: 20px auto; max-width: 400px;'>");
+        client.println("<p>Please reconnect to the ESP-Config network after reset.</p>");
+        client.println("<p><b>SSID:</b> ESP-Config</p>");
+        client.println("<p><b>Password:</b> 12345678</p>");
+        client.println("</div>");
+        client.println("</body></html>");
+        
+        // Tunggu sampai client menerima respons
+        delay(2000);
+        
+        // Tutup koneksi client
+        client.stop();
+        
+        // Reset konfigurasi
+        clearWiFiConfig();
+        
+        // Restart dengan aman
+        safeRestart();
+        return;
+    }
 
     // Kirim respons ke browser
     client.println("HTTP/1.1 200 OK");
@@ -508,18 +568,26 @@ void handleRelayRequest(WiFiClient client, String request) {
     client.println("<head><title>ESP8266 RELAY Control</title>");
     client.println("<meta name='viewport' content='width=device-width, initial-scale=1'>");
     client.println("<style>");
-    client.println("body { font-family: Arial; text-align: center; margin: 20px; }");
-    client.println(".button { display: inline-block; background-color: #4CAF50; color: white; padding: 15px 32px; ");
-    client.println("text-decoration: none; font-size: 16px; margin: 10px; cursor: pointer; border-radius: 8px; }");
+    client.println("body { font-family: Arial, sans-serif; text-align: center; margin: 0; padding: 20px; background-color: #f5f5f5; color: #333; }");
+    client.println(".container { max-width: 600px; margin: 0 auto; background-color: white; border-radius: 10px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }");
+    client.println("h2 { color: #2c3e50; margin-bottom: 20px; }");
+    client.println(".button { display: inline-block; background-color: #4CAF50; color: white; padding: 12px 30px; ");
+    client.println("text-decoration: none; font-size: 16px; margin: 10px 5px; cursor: pointer; border-radius: 8px; border: none; transition: all 0.3s; }");
+    client.println(".button:hover { transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.1); }");
     client.println(".off { background-color: #f44336; }");
     client.println(".settings { background-color: #2196F3; }");
-    client.println(".info { background-color: #f2f2f2; padding: 10px; border-radius: 8px; margin-bottom: 20px; }");
+    client.println(".warning { background-color: #ff9800; }");
+    client.println(".info { background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #2196F3; text-align: left; }");
     client.println(".eeprom-meter { height: 20px; background-color: #ddd; border-radius: 10px; margin: 10px 0; width: 100%; max-width: 300px; display: inline-block; }");
     client.println(".eeprom-value { height: 20px; background-color: #4CAF50; border-radius: 10px; text-align: center; line-height: 20px; color: white; }");
     client.println(".eeprom-warning { background-color: #ff9800; }");
     client.println(".eeprom-danger { background-color: #f44336; }");
+    client.println(".status { font-size: 18px; font-weight: bold; margin: 15px 0; }");
+    client.println(".footer { margin-top: 30px; font-size: 12px; color: #777; }");
+    client.println(".button-group { margin: 15px 0; }");
     client.println("</style></head>");
     client.println("<body>");
+    client.println("<div class='container'>");
     client.println("<h2>ESP8266 Control Panel</h2>");
     
     // Informasi koneksi WiFi
@@ -560,31 +628,57 @@ void handleRelayRequest(WiFiClient client, String request) {
     client.println("<p>Storage: " + String(usedEepromSize) + " / " + String(EEPROM_SIZE) + " bytes</p>");
     client.println("</div>");
     
-    client.print("<p>Relay is now: <b>");
-    client.print(digitalRead(RELAY) == HIGH ? "OFF" : "ON");
-    client.println("</b></p>");
+    client.println("<div class='status'>");
+    client.println("Relay is now: <span style='color: " + String(digitalRead(RELAY) == HIGH ? "#f44336" : "#4CAF50") + ";'>");
+    client.println(digitalRead(RELAY) == HIGH ? "OFF" : "ON");
+    client.println("</span>");
+    client.println("</div>");
+    
+    client.println("<div class='button-group'>");
     client.println("<a href=\"/RELAY=ON\" class=\"button\">Turn ON</a>");
     client.println("<a href=\"/RELAY=OFF\" class=\"button off\">Turn OFF</a>");
-    client.println("<br><br>");
+    client.println("</div>");
+    
+    client.println("<div class='button-group'>");
     client.println("<a href=\"/wifisetup\" class=\"button settings\">WiFi Settings</a>");
-
-	client.println("<br><br>");
-	client.println("<a href=\"/scanmode=" + String(scanMode ? "OFF" : "ON") + "\" class=\"button " + 
-              (scanMode ? "off" : "settings") + "\">Scan Mode: " + 
-              (scanMode ? "ON" : "OFF") + "</a>");
+    
+    if (scanMode) {
+        client.println("<a href=\"/scanmode=OFF\" class=\"button off\">Disable Scan Mode</a>");
+    } else {
+        client.println("<a href=\"/scanmode=ON\" class=\"button settings\">Enable Scan Mode</a>");
+    }
+    client.println("</div>");
+    
+    // Tambahkan tombol manual reset
+    client.println("<div class='button-group'>");
+    client.println("<a href=\"/manualreset\" class=\"button warning\" onclick=\"return confirm('Are you sure you want to reset all settings? This cannot be undone.');\">Manual Reset</a>");
+    client.println("</div>");
+    
+    client.println("<div class='footer'>");
+    client.println("ESP8266 WiFi Relay Controller v1.0");
+    client.println("</div>");
+    
+    client.println("</div>"); // container
+    
+    // Tambahkan script JavaScript untuk konfirmasi
+    client.println("<script>");
+    client.println("function confirmReset() {");
+    client.println("  return confirm('Are you sure you want to reset all settings? This cannot be undone.');");
+    client.println("}");
+    client.println("</script>");
+    
     client.println("</body></html>");
 }
 
 void setup() {
     Serial.begin(9600);
+	lastScanTime = millis();
     pinMode(RELAY, OUTPUT);
     digitalWrite(RELAY, LOW);
     
     // Baca counter EEPROM
     readEepromCounter();
 
-
-	lastScanTime = millis();
     
     readWiFiConfig();
     if (ssid.length() > 0) {
@@ -627,18 +721,72 @@ void loop() {
     } else if (request.indexOf("/wifisetup") != -1) {
         sendWiFiConfigPage(client);
     } else if (request.indexOf("/clearwifi") != -1) {
-        clearWiFiConfig();
-        client.println("HTTP/1.1 200 OK");
-        client.println("Content-Type: text/html");
-        client.println("");
-        client.println("<!DOCTYPE HTML><html>");
-        client.println("<head><meta http-equiv='refresh' content='5;url=/' /></head>");
-        client.println("<body><h2>WiFi settings cleared!</h2>");
-        client.println("<p>Device will restart in Access Point mode...</p>");
-        client.println("<p>Redirecting in 5 seconds...</p></body></html>");
-        delay(1000);
-        ESP.restart();
-    } else if (request.indexOf("/reseteeprom") != -1) {
+		clearWiFiConfig();
+		
+		client.println("HTTP/1.1 200 OK");
+		client.println("Content-Type: text/html");
+		client.println("");
+		client.println("<!DOCTYPE HTML><html>");
+		client.println("<head>");
+		client.println("<meta name='viewport' content='width=device-width, initial-scale=1'>");
+		client.println("<meta http-equiv='refresh' content='10;url=/' />");
+		client.println("<style>");
+		client.println("body { font-family: Arial, sans-serif; text-align: center; margin: 0; padding: 20px; background-color: #f5f5f5; color: #333; }");
+		client.println(".container { max-width: 600px; margin: 0 auto; background-color: white; border-radius: 10px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }");
+		client.println("h2 { color: #2c3e50; margin-bottom: 20px; }");
+		client.println(".info-box { background-color: #f8f9fa; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #2196F3; text-align: left; }");
+		client.println(".countdown { font-size: 24px; font-weight: bold; margin: 20px 0; color: #f44336; }");
+		client.println(".button { display: inline-block; background-color: #2196F3; color: white; padding: 12px 30px; ");
+		client.println("text-decoration: none; font-size: 16px; margin: 10px 5px; cursor: pointer; border-radius: 8px; border: none; transition: all 0.3s; }");
+		client.println(".button:hover { transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.1); }");
+		client.println("</style>");
+		client.println("</head>");
+		client.println("<body>");
+		client.println("<div class='container'>");
+		client.println("<h2>WiFi Settings Cleared!</h2>");
+		
+		client.println("<div class='info-box'>");
+		client.println("<p><b>Status:</b> Device will restart in Access Point mode.</p>");
+		client.println("<p><b>Next Steps:</b></p>");
+		client.println("<ul>");
+		client.println("<li>Wait for the device to restart</li>");
+		client.println("<li>Connect to the <b>ESP-Config</b> network</li>");
+		client.println("<li>Password: <b>12345678</b></li>");
+		client.println("<li>Navigate to <b>192.168.4.1</b> in your browser</li>");
+		client.println("</ul>");
+		client.println("</div>");
+		
+		client.println("<div class='countdown'>");
+		client.println("Restarting in <span id='seconds'>10</span> seconds...");
+		client.println("</div>");
+		
+		client.println("<a href='/' class='button'>Back to Home</a>");
+		
+		// JavaScript untuk countdown
+		client.println("<script>");
+		client.println("var seconds = 10;");
+		client.println("var countdown = setInterval(function() {");
+		client.println("  seconds--;");
+		client.println("  document.getElementById('seconds').textContent = seconds;");
+		client.println("  if (seconds <= 0) clearInterval(countdown);");
+		client.println("}, 1000);");
+		client.println("</script>");
+		
+		client.println("</div>"); // container
+		client.println("</body></html>");
+		
+		// Tunggu sampai client menerima respons
+		delay(2000);
+		
+		// Tutup koneksi client sebelum restart
+		client.stop();
+		
+		// Tunggu sebentar lagi untuk memastikan semua operasi selesai
+		delay(1000);
+		
+		// Restart ESP
+		safeRestart();
+	}else if (request.indexOf("/reseteeprom") != -1) {
         resetEepromCounter();
         client.println("HTTP/1.1 200 OK");
         client.println("Content-Type: text/html");
