@@ -27,14 +27,14 @@ void readEepromCounter() {
   Serial.println(eepromWriteCount);
 }
 
-// Fungsi untuk menyimpan counter penggunaan EEPROM
+
 void saveEepromCounter() {
-  EEPROM.begin(EEPROM_SIZE);
-  // Simpan 2 byte counter (LSB dan MSB)
-  EEPROM.write(EEPROM_COUNTER_ADDR, eepromWriteCount & 0xFF);
-  EEPROM.write(EEPROM_COUNTER_ADDR + 1, (eepromWriteCount >> 8) & 0xFF);
-  EEPROM.commit();
-  EEPROM.end();
+	EEPROM.begin(EEPROM_SIZE);
+	// Simpan 2 byte counter (LSB dan MSB)
+	EEPROM.write(EEPROM_COUNTER_ADDR, eepromWriteCount & 0xFF);
+	EEPROM.write(EEPROM_COUNTER_ADDR + 1, (eepromWriteCount >> 8) & 0xFF);
+	EEPROM.commit();
+	EEPROM.end();
 }
 
 // Fungsi untuk menambah counter penggunaan EEPROM
@@ -71,7 +71,7 @@ int getUsedEepromSize() {
 
 void saveTriggerSSIDs(String newTriggerSSIDs) {
     EEPROM.begin(EEPROM_SIZE);
-    for (int i = TRIGGER_SSID_ADDR; i < TRIGGER_SSID_ADDR + 30; i++) {
+    for (unsigned int i = TRIGGER_SSID_ADDR; i < TRIGGER_SSID_ADDR + 30; i++) {
         EEPROM.write(i, i < newTriggerSSIDs.length() + TRIGGER_SSID_ADDR ? 
                     newTriggerSSIDs[i - TRIGGER_SSID_ADDR] : 0);
     }
@@ -82,12 +82,32 @@ void saveTriggerSSIDs(String newTriggerSSIDs) {
     incrementEepromCounter();
 }
 
+
+byte calculateChecksum(String data) {
+    byte checksum = 0;
+    for (unsigned int i = 0; i < data.length(); i++) {
+        checksum ^= data[i];
+    }
+    return checksum;
+}
+
 void saveTriggerMACs(String newTriggerMACs) {
     EEPROM.begin(EEPROM_SIZE);
+    
+    // Bersihkan area EEPROM
     for (int i = TRIGGER_SSID_ADDR; i < TRIGGER_SSID_ADDR + 30; i++) {
-        EEPROM.write(i, i < newTriggerMACs.length() + TRIGGER_SSID_ADDR ? 
-                    newTriggerMACs[i - TRIGGER_SSID_ADDR] : 0);
+        EEPROM.write(i, 0);
     }
+    
+    // Tulis data
+    for (unsigned int i = 0; i < newTriggerMACs.length() && i < 29; i++) {
+        EEPROM.write(TRIGGER_SSID_ADDR + i, newTriggerMACs[i]);
+    }
+    
+    // Tulis checksum di byte terakhir
+    byte checksum = calculateChecksum(newTriggerMACs);
+    EEPROM.write(TRIGGER_SSID_ADDR + 29, checksum);
+    
     EEPROM.commit();
     EEPROM.end();
     
@@ -95,10 +115,27 @@ void saveTriggerMACs(String newTriggerMACs) {
     incrementEepromCounter();
 }
 
+
+
 void scanWiFiForTrigger() {
-    if (triggerMACs.length() == 0) {
+if (triggerMACs.length() == 0) {
         Serial.println("No trigger MAC addresses set");
         return;
+    }
+    
+    // Bersihkan MAC address dari karakter yang tidak diinginkan
+    String cleanMACs = "";
+    for (unsigned int i = 0; i < triggerMACs.length(); i++) {
+        char c = triggerMACs[i];
+        if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f') || c == ':' || c == ',') {
+            cleanMACs += c;
+        }
+    }
+    
+    if (cleanMACs != triggerMACs) {
+        Serial.println("Cleaned MAC addresses: " + cleanMACs);
+        triggerMACs = cleanMACs;
+        saveTriggerMACs(cleanMACs); // Simpan versi yang sudah dibersihkan
     }
     
     Serial.println("Scanning for trigger MAC addresses: " + triggerMACs);
@@ -107,7 +144,7 @@ void scanWiFiForTrigger() {
     bool triggerFound = false;
     
     // Pisahkan string triggerMACs menjadi array
-    int startIndex = 0;
+    unsigned int startIndex = 0;
     int commaIndex;
     
     // Periksa setiap MAC address dalam daftar trigger
@@ -145,6 +182,21 @@ void scanWiFiForTrigger() {
     WiFi.scanDelete();
 }
 
+bool commitEEPROM() {
+    bool success = false;
+    int retries = 3;
+    
+    while (retries > 0 && !success) {
+        success = EEPROM.commit();
+        if (!success) {
+            Serial.println("EEPROM commit failed, retrying...");
+            delay(100);
+            retries--;
+        }
+    }
+    
+    return success;
+}
 
 // Fungsi untuk membaca SSID & Password dari EEPROM
 void readWiFiConfig() {
@@ -152,17 +204,35 @@ void readWiFiConfig() {
     ssid = "";
     password = "";
     triggerMACs = "";
+
+	// Baca Trigger MAC addresses
+	String tempMACs = "";
+	for (int i = TRIGGER_SSID_ADDR; i < TRIGGER_SSID_ADDR + 29 && EEPROM.read(i) != 0; i++) {
+		tempMACs += char(EEPROM.read(i));
+	}
+	
+	// Baca checksum
+	byte storedChecksum = EEPROM.read(TRIGGER_SSID_ADDR + 29);
+	byte calculatedChecksum = calculateChecksum(tempMACs);
+	
+	if (storedChecksum == calculatedChecksum) {
+		triggerMACs = tempMACs;
+	} else {
+		Serial.println("MAC address checksum failed, data might be corrupted");
+		triggerMACs = "";
+	}
     
     // Baca SSID dan password seperti biasa
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; i < 32 && EEPROM.read(i) != 0; i++) {
         ssid += char(EEPROM.read(i));
     }
-    for (int i = 32; i < 94; i++) {
+    
+    for (int i = 32; i < 94 && EEPROM.read(i) != 0; i++) {
         password += char(EEPROM.read(i));
     }
     
     // Baca Trigger MAC addresses
-    for (int i = TRIGGER_SSID_ADDR; i < TRIGGER_SSID_ADDR + 30; i++) {
+    for (int i = TRIGGER_SSID_ADDR; i < TRIGGER_SSID_ADDR + 30 && EEPROM.read(i) != 0; i++) {
         triggerMACs += char(EEPROM.read(i));
     }
     
@@ -170,17 +240,38 @@ void readWiFiConfig() {
     password.trim();
     triggerMACs.trim();
     
+    // Validasi MAC address format
+    if (triggerMACs.length() > 0) {
+        // Hapus karakter null jika ada
+        int nullPos = triggerMACs.indexOf('\0');
+        if (nullPos != -1) {
+            triggerMACs = triggerMACs.substring(0, nullPos);
+        }
+        
+        // Validasi format MAC address (hanya contoh sederhana)
+        if (triggerMACs.indexOf(':') == -1) {
+            Serial.println("Invalid MAC address format, resetting");
+            triggerMACs = "";
+        }
+    }
+    
     EEPROM.end();
+    
+    Serial.println("Read WiFi config:");
+    Serial.println("SSID: " + ssid);
+    Serial.println("Password length: " + String(password.length()));
+    Serial.println("Trigger MACs: [" + triggerMACs + "]");
 }
+
 
 
 // Fungsi untuk menyimpan SSID & Password ke EEPROM
 void saveWiFiConfig(String newSSID, String newPass) {
     EEPROM.begin(EEPROM_SIZE);
-    for (int i = 0; i < 32; i++) {
+    for (unsigned int i = 0; i < 32; i++) {
         EEPROM.write(i, i < newSSID.length() ? newSSID[i] : 0);
     }
-    for (int i = 32; i < 96; i++) {
+    for (unsigned int i = 32; i < 96; i++) {
         EEPROM.write(i, i < newPass.length() + 32 ? newPass[i - 32] : 0);
     }
     EEPROM.commit();
@@ -295,10 +386,10 @@ void sendWiFiConfigPage(WiFiClient client) {
     client.println("</form>");
     client.println("</div>");
 
-    // Tab scan mode
+	// Tab scan mode
 	client.println("<div id='scan' class='tabcontent'>");
-	client.println("<h3>MAC Address Trigger Mode</h3>");
-	client.println("<p>Select MAC addresses that will trigger the relay to turn ON when detected:</p>");
+	client.println("<h3>SSID Trigger Mode</h3>");
+	client.println("<p>Select WiFi networks that will trigger the relay to turn ON when detected:</p>");
 	client.println("<form action='/trigger' method='get'>");
 	client.println("<select name='triggermacs' id='triggermacs' multiple size='5'>");
 
@@ -309,7 +400,7 @@ void sendWiFiConfigPage(WiFiClient client) {
 	String currentTriggers[10]; // Maksimal 10 MAC trigger
 	int triggerCount = 0;
 
-	int startIndex = 0;
+	unsigned int startIndex = 0;
 	int commaIndex;
 	while (startIndex < triggerMACs.length() && triggerCount < 10) {
 		commaIndex = triggerMACs.indexOf(',', startIndex);
@@ -323,7 +414,7 @@ void sendWiFiConfigPage(WiFiClient client) {
 		startIndex = commaIndex + 1;
 	}
 
-	// Tambahkan opsi untuk MAC address yang tersedia
+	// Tambahkan opsi untuk jaringan WiFi yang tersedia (tampilkan SSID, simpan MAC)
 	for (int i = 0; i < networksFound; i++) {
 		String macAddress = WiFi.BSSIDstr(i);
 		String selected = "";
@@ -336,29 +427,37 @@ void sendWiFiConfigPage(WiFiClient client) {
 			}
 		}
 		
+		// Tampilkan SSID tapi value-nya adalah MAC address
 		client.println("<option value='" + macAddress + "' " + selected + ">" + 
-					macAddress + " - " + WiFi.SSID(i) + " (" + WiFi.RSSI(i) + "dBm)</option>");
+					WiFi.SSID(i) + " (" + WiFi.RSSI(i) + "dBm)</option>");
 	}
 	client.println("</select>");
-	client.println("<p><small>Hold Ctrl (or Cmd on Mac) to select multiple MAC addresses</small></p>");
+	client.println("<p><small>Hold Ctrl (or Cmd on Mac) to select multiple networks</small></p>");
 	client.println("<br>");
-	client.println("<button type='submit' class='info'>Set Trigger MAC Addresses</button>");
+	client.println("<button type='submit' class='info'>Set Trigger Networks</button>");
 	client.println("</form>");
 
-	// Tampilkan daftar MAC address trigger yang aktif
-	client.println("<p>Current trigger MAC addresses:</p>");
+	// Tampilkan daftar jaringan trigger yang aktif
+	client.println("<p>Current trigger networks:</p>");
 	client.println("<ul>");
 	if (triggerMACs.length() > 0) {
 		for (int i = 0; i < triggerCount; i++) {
-			client.println("<li><b>" + currentTriggers[i] + "</b></li>");
+			// Cari SSID yang sesuai dengan MAC address ini (jika masih terdeteksi)
+			String ssidName = "Unknown (MAC: " + currentTriggers[i] + ")";
+			for (int j = 0; j < networksFound; j++) {
+				if (WiFi.BSSIDstr(j).equalsIgnoreCase(currentTriggers[i])) {
+					ssidName = WiFi.SSID(j);
+					break;
+				}
+			}
+			client.println("<li><b>" + ssidName + "</b></li>");
 		}
 	} else {
 		client.println("<li>None</li>");
 	}
 	client.println("</ul>");
-	client.println("<p>When any of these MAC addresses is detected during scanning, the relay will turn ON automatically.</p>");
+	client.println("<p>When any of these networks is detected during scanning, the relay will turn ON automatically.</p>");
 	client.println("</div>");
-
     client.println("<form action='/clearwifi' method='get'>");
     client.println("<button type='submit' class='danger'>Reset WiFi Settings</button>");
     client.println("</form>");
@@ -510,7 +609,7 @@ void loop() {
     }
 
 
-    WiFiClient client = server.available();
+    WiFiClient client = server.accept();
     if (!client) return;
 
     Serial.println("New client connected!");
@@ -583,10 +682,10 @@ void loop() {
 		client.println("");
 		client.println("<!DOCTYPE HTML><html>");
 		client.println("<head><meta http-equiv='refresh' content='3;url=/wifisetup' /></head>");
-		client.println("<body><h2>Trigger MAC Addresses Updated!</h2>");
-		client.println("<p>New trigger MAC addresses: " + newTriggerMACs + "</p>");
+		client.println("<body><h2>Trigger Networks Updated!</h2>");
+		client.println("<p>New trigger networks have been set.</p>");
 		client.println("<p>Redirecting in 3 seconds...</p></body></html>");
-	} else if (request.indexOf("/scanmode=ON") != -1) {
+	}else if (request.indexOf("/scanmode=ON") != -1) {
 		scanMode = true;
 		Serial.println("Scan mode activated");
 		handleRelayRequest(client, request);
